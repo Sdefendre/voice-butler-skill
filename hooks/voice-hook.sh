@@ -21,7 +21,20 @@ fi
 python3 - "$TMPFILE" "$CACHE_DIR" << 'PY'
 import sys, json, re, random, subprocess, wave, os, tempfile
 
-OPENER_COUNT = 12
+# Configurable settings via environment variables
+VOICE = os.environ.get('CLAUDE_VOICE', 'bm_george')
+SPEED = float(os.environ.get('CLAUDE_VOICE_SPEED', '1.3'))
+PLAYBACK_SPEED = float(os.environ.get('CLAUDE_PLAYBACK_SPEED', '1.5'))
+MAX_SUMMARY_WORDS = int(os.environ.get('CLAUDE_SUMMARY_WORDS', '100'))
+OPENER_COUNT = int(os.environ.get('CLAUDE_OPENER_COUNT', '12'))
+
+# Debug logging
+DEBUG = os.path.exists(os.path.expanduser('~/.claude/voice-debug'))
+def debug(msg):
+    if DEBUG:
+        with open('/tmp/voice-hook.log', 'a') as f:
+            import datetime
+            f.write(f"[{datetime.datetime.now().isoformat()}] {msg}\n")
 
 BUTLER_CLOSERS = {
     "default": [
@@ -69,8 +82,27 @@ def get_closer(text):
     else:
         return random.choice(BUTLER_CLOSERS["default"])
 
-def summarize(text, max_words=30):
+def summarize(text, max_words=None):
     """Smart summarization: find key actions and build a coherent summary."""
+    if max_words is None:
+        max_words = MAX_SUMMARY_WORDS
+
+    # Handle empty/very short messages
+    if not text or len(text.strip()) < 10:
+        return "Done."
+
+    # Skip redundant tool-related preamble text
+    skip_patterns = [
+        r"Let me (?:read|check|look at|search|run|examine|inspect|review).*?\.",
+        r"I'll (?:read|check|look at|search|run|examine|inspect|review).*?\.",
+        r"Reading (?:the )?file.*?\.",
+        r"Searching (?:for|the).*?\.",
+        r"Looking at.*?\.",
+        r"Let me (?:first )?(?:understand|see|find).*?\.",
+    ]
+    for pat in skip_patterns:
+        text = re.sub(pat, '', text, flags=re.IGNORECASE)
+
     # Handle bullet lists specially before stripping
     bullet_match = re.search(r'(.*?:)?\s*\n?((?:[-*•]\s+.+\n?)+)', text, re.MULTILINE)
     if bullet_match:
@@ -87,6 +119,24 @@ def summarize(text, max_words=30):
             else:
                 list_summary = ', '.join(items[:-1]) + f', and {items[-1]}'
             # Add prefix if short enough
+            if prefix and len(prefix.split()) <= 4:
+                return f"{prefix.strip()} {list_summary}."
+            return list_summary[0].upper() + list_summary[1:] + '.'
+
+    # Handle numbered lists
+    numbered_match = re.search(r'(.*?:)?\s*\n?((?:\d+[.)]\s+.+\n?)+)', text, re.MULTILINE)
+    if numbered_match:
+        prefix = numbered_match.group(1) or ""
+        items_block = numbered_match.group(2)
+        items = re.findall(r'\d+[.)]\s+(.+?)(?:\n|$)', items_block)
+        items = [item.strip().rstrip('.') for item in items if item.strip()]
+        if items:
+            if len(items) == 1:
+                list_summary = items[0]
+            elif len(items) == 2:
+                list_summary = f"{items[0]} and {items[1]}"
+            else:
+                list_summary = ', '.join(items[:-1]) + f', and {items[-1]}'
             if prefix and len(prefix.split()) <= 4:
                 return f"{prefix.strip()} {list_summary}."
             return list_summary[0].upper() + list_summary[1:] + '.'
@@ -192,23 +242,31 @@ def get_assistant_message(data):
     # Claude Code format: has transcript_path pointing to JSONL file
     tp = data.get('transcript_path', '')
     if tp and os.path.exists(tp):
-        last = None
+        last_message_texts = []
         with open(tp) as f:
             for line in f:
                 try:
                     e = json.loads(line.strip())
                     if e.get('type') == 'assistant':
+                        # New assistant message - reset and collect all text blocks
+                        last_message_texts = []
                         for b in e.get('message', {}).get('content', []):
                             if b.get('type') == 'text' and b.get('text', '').strip():
-                                last = b['text'].strip()
+                                last_message_texts.append(b['text'].strip())
                 except: pass
-        return last
+        # Join all text blocks from the last assistant message with sentence separator
+        if last_message_texts:
+            result = ' '.join(last_message_texts)
+            debug(f"Extracted message: {result[:200]}...")
+            return result
 
+    debug("No assistant message found")
     return None
 
 try:
     input_file = sys.argv[1]
     cache_dir = sys.argv[2]
+    debug(f"Starting voice hook with input: {input_file}")
 
     with open(input_file) as f:
         data = json.load(f)
@@ -221,23 +279,32 @@ try:
 
     # Build summary text
     if last:
-        summary_text = f"{summarize(last)} {get_closer(last)}"
+        summary = summarize(last)
+        closer = get_closer(last)
+        summary_text = f"{summary} {closer}"
+        debug(f"Summary: {summary}")
+        debug(f"Closer: {closer}")
     else:
         summary_text = get_closer('')
+        debug(f"No message, using fallback: {summary_text}")
 
     # Generate summary audio
     tmp_dir = tempfile.mkdtemp()
     summary_prefix = os.path.join(tmp_dir, "summary")
 
-    subprocess.run([
+    debug(f"Generating TTS with voice={VOICE}, speed={SPEED}")
+    result = subprocess.run([
         "python3", "-m", "mlx_audio.tts.generate",
         "--model", "mlx-community/Kokoro-82M-bf16",
         "--text", summary_text,
-        "--voice", "bm_george",
+        "--voice", VOICE,
         "--lang_code", "b",
-        "--speed", "1.3",
+        "--speed", str(SPEED),
         "--file_prefix", summary_prefix
-    ], capture_output=True)
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        debug(f"TTS error: {result.stderr}")
 
     summary_file = f"{summary_prefix}_000.wav"
 
@@ -245,16 +312,22 @@ try:
     final_audio = os.path.join(tmp_dir, "final.wav")
     if os.path.exists(opener_file) and os.path.exists(summary_file):
         concat_wavs([opener_file, summary_file], final_audio)
-        # Play at 1.5x speed for snappiness
-        subprocess.run(["afplay", "-r", "1.5", final_audio])
+        debug(f"Playing concatenated audio at {PLAYBACK_SPEED}x")
+        subprocess.run(["afplay", "-r", str(PLAYBACK_SPEED), final_audio])
     elif os.path.exists(summary_file):
-        subprocess.run(["afplay", "-r", "1.5", summary_file])
+        debug(f"Playing summary only at {PLAYBACK_SPEED}x")
+        subprocess.run(["afplay", "-r", str(PLAYBACK_SPEED), summary_file])
+    else:
+        debug("No audio files generated")
 
     # Cleanup
     import shutil
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 except Exception as e:
+    debug(f"Exception: {type(e).__name__}: {e}")
+    import traceback
+    debug(traceback.format_exc())
     # Fallback: just say something
     subprocess.run(["say", "-v", "Daniel", "Task complete, sir."])
 PY
