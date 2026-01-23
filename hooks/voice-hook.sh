@@ -1,11 +1,11 @@
 #!/bin/bash
-# Voice notification hook - Kokoro TTS with British butler voice
-# Works with both Claude Code and OpenAI Codex
-# Optimized: concatenates opener + summary for seamless playback at 1.5x speed
+# Voice notification hook for Claude Code and OpenAI Codex
+# Configurable TTS: Pocket TTS (fast) or Kokoro (butler voice)
+# Set CLAUDE_TTS_MODEL=kokoro for British butler voice
+# Plays summary at 1.5x speed
 
 [ ! -f ~/.claude/voice-enabled ] && exit 0
 
-CACHE_DIR="$HOME/.claude/voice-cache"
 TMPFILE=$(mktemp)
 
 # Handle input from either stdin (Claude Code) or command arg (Codex)
@@ -17,16 +17,19 @@ else
     cat > "$TMPFILE"
 fi
 
-# Single Python script: get summary, generate TTS, concatenate, play - all in one for speed
-python3 - "$TMPFILE" "$CACHE_DIR" << 'PY'
-import sys, json, re, random, subprocess, wave, os, tempfile
+# Single Python script: get summary, generate TTS, play - all in one for speed
+python3 - "$TMPFILE" << 'PY'
+import sys, json, re, random, subprocess, os, tempfile
 
 # Configurable settings via environment variables
-VOICE = os.environ.get('CLAUDE_VOICE', 'bm_george')
-SPEED = float(os.environ.get('CLAUDE_VOICE_SPEED', '1.3'))
+# TTS_MODEL: "pocket" (default, fast) or "kokoro" (butler voice)
+TTS_MODEL = os.environ.get('CLAUDE_TTS_MODEL', 'pocket').lower()
+# Voice settings per model
+POCKET_VOICE = os.environ.get('CLAUDE_POCKET_VOICE', 'jean')
+KOKORO_VOICE = os.environ.get('CLAUDE_KOKORO_VOICE', 'bm_george')
+KOKORO_SPEED = float(os.environ.get('CLAUDE_KOKORO_SPEED', '1.3'))
 PLAYBACK_SPEED = float(os.environ.get('CLAUDE_PLAYBACK_SPEED', '1.5'))
 MAX_SUMMARY_WORDS = int(os.environ.get('CLAUDE_SUMMARY_WORDS', '100'))
-OPENER_COUNT = int(os.environ.get('CLAUDE_OPENER_COUNT', '12'))
 
 # Debug logging
 DEBUG = os.path.exists(os.path.expanduser('~/.claude/voice-debug'))
@@ -83,7 +86,7 @@ def get_closer(text):
         return random.choice(BUTLER_CLOSERS["default"])
 
 def summarize(text, max_words=None):
-    """Smart summarization: find key actions and build a coherent summary."""
+    """Smart summarization: build a comprehensive summary of the whole output."""
     if max_words is None:
         max_words = MAX_SUMMARY_WORDS
 
@@ -99,6 +102,8 @@ def summarize(text, max_words=None):
         r"Searching (?:for|the).*?\.",
         r"Looking at.*?\.",
         r"Let me (?:first )?(?:understand|see|find).*?\.",
+        r"I can see (?:that )?.*?\.",
+        r"Based on (?:the|my).*?\.",
     ]
     for pat in skip_patterns:
         text = re.sub(pat, '', text, flags=re.IGNORECASE)
@@ -167,64 +172,78 @@ def summarize(text, max_words=None):
         return "Task completed."
 
     # Action verbs ranked by importance (most descriptive first)
-    actions = [
-        (r'\b(created|wrote|generated|added)\b', 'created'),
-        (r'\b(edited|updated|modified|changed|refactored)\b', 'updated'),
-        (r'\b(fixed|resolved|corrected|repaired)\b', 'fixed'),
-        (r'\b(deleted|removed|cleared)\b', 'removed'),
-        (r'\b(found|located|discovered|identified)\b', 'found'),
-        (r'\b(installed|configured|set up)\b', 'configured'),
-        (r'\b(tested|verified|confirmed|validated)\b', 'verified'),
-        (r'\b(moved|renamed|copied)\b', 'moved'),
+    action_patterns = [
+        r'\b(created|wrote|generated|added|implemented)\b',
+        r'\b(edited|updated|modified|changed|refactored)\b',
+        r'\b(fixed|resolved|corrected|repaired)\b',
+        r'\b(deleted|removed|cleared)\b',
+        r'\b(found|located|discovered|identified)\b',
+        r'\b(installed|configured|set up)\b',
+        r'\b(tested|verified|confirmed|validated)\b',
+        r'\b(moved|renamed|copied)\b',
+        r'\b(pushed|committed|deployed|merged)\b',
+        r'\b(completed|finished|done)\b',
     ]
 
-    # Find the most important action sentence
-    best_sentence = None
-    best_priority = len(actions) + 1
-
-    for sent in sentences:
+    # Score each sentence by importance
+    def score_sentence(sent):
         sent_lower = sent.lower()
-        for priority, (pattern, _) in enumerate(actions):
+        score = 0
+        # Higher score for action verbs (earlier in list = more important)
+        for i, pattern in enumerate(action_patterns):
             if re.search(pattern, sent_lower):
-                if priority < best_priority:
-                    best_priority = priority
-                    best_sentence = sent
-                break
+                score += (len(action_patterns) - i) * 10
+        # Bonus for sentences with file paths or specific details
+        if re.search(r'[\w/]+\.\w+', sent):  # file paths
+            score += 5
+        # Penalty for questions or meta-commentary
+        if sent.endswith('?') or 'would you like' in sent_lower or 'let me know' in sent_lower:
+            score -= 20
+        return score
 
-    # Use action sentence, or fall back to first sentence
-    chosen = best_sentence if best_sentence else sentences[0]
+    # Score and sort sentences
+    scored = [(score_sentence(s), i, s) for i, s in enumerate(sentences)]
+    scored.sort(key=lambda x: (-x[0], x[1]))  # Sort by score desc, then original order
 
-    # Trim to max words while keeping coherent
-    words = chosen.split()
-    if len(words) > max_words:
-        # Try to cut at a natural break
-        truncated = ' '.join(words[:max_words])
-        # Find last comma or conjunction to cut cleanly
-        for delim in [', ', ' and ', ' but ', ' or ']:
-            if delim in truncated:
-                truncated = truncated.rsplit(delim, 1)[0]
-                break
-        chosen = truncated + '.'
+    # Build summary by collecting top sentences up to max_words
+    summary_sentences = []
+    word_count = 0
+    used_indices = set()
+
+    for score, idx, sent in scored:
+        if score < 0:
+            continue  # Skip low-quality sentences
+        sent_words = len(sent.split())
+        if word_count + sent_words <= max_words:
+            summary_sentences.append((idx, sent))
+            used_indices.add(idx)
+            word_count += sent_words
+        if word_count >= max_words * 0.8:
+            break
+
+    # If we have nothing, use first sentence
+    if not summary_sentences:
+        summary_sentences = [(0, sentences[0])]
+
+    # Sort by original order for coherent flow
+    summary_sentences.sort(key=lambda x: x[0])
+    summary = ' '.join(s for _, s in summary_sentences)
 
     # Ensure ends with punctuation
-    if chosen and chosen[-1] not in '.!?':
-        chosen += '.'
+    if summary and summary[-1] not in '.!?':
+        summary += '.'
 
-    return chosen
+    return summary
 
-def concat_wavs(wav_files, output_path):
-    """Concatenate WAV files into one seamless file"""
-    data = []
-    params = None
-    for wav_file in wav_files:
-        with wave.open(wav_file, 'rb') as w:
-            if params is None:
-                params = w.getparams()
-            data.append(w.readframes(w.getnframes()))
-    with wave.open(output_path, 'wb') as out:
-        out.setparams(params)
-        for d in data:
-            out.writeframes(d)
+def detect_platform(data):
+    """Detect if input is from Codex or Claude Code"""
+    if "last-assistant-message" in data or "last_assistant_message" in data:
+        return "codex"
+    if data.get("type") == "agent-turn-complete":
+        return "codex"
+    if data.get('transcript_path'):
+        return "claude"
+    return "unknown"
 
 def get_assistant_message(data):
     """Extract assistant message from either Claude Code or Codex format"""
@@ -263,16 +282,41 @@ def get_assistant_message(data):
     debug("No assistant message found")
     return None
 
+def generate_tts(text, output_prefix):
+    """Generate TTS audio using configured model"""
+    if TTS_MODEL == 'kokoro':
+        # Kokoro with British butler voice (slower but distinctive)
+        debug(f"Using Kokoro ({KOKORO_VOICE})")
+        return subprocess.run([
+            "python3", "-m", "mlx_audio.tts.generate",
+            "--model", "mlx-community/Kokoro-82M-bf16",
+            "--text", text,
+            "--voice", KOKORO_VOICE,
+            "--lang_code", "b",
+            "--speed", str(KOKORO_SPEED),
+            "--file_prefix", output_prefix
+        ], capture_output=True, text=True)
+    else:
+        # Pocket TTS (default - fast, low latency)
+        debug(f"Using Pocket TTS ({POCKET_VOICE})")
+        return subprocess.run([
+            "python3", "-m", "mlx_audio.tts.generate",
+            "--model", "mlx-community/pocket-tts",
+            "--text", text,
+            "--voice", POCKET_VOICE,
+            "--file_prefix", output_prefix
+        ], capture_output=True, text=True)
+
 try:
     input_file = sys.argv[1]
-    cache_dir = sys.argv[2]
     debug(f"Starting voice hook with input: {input_file}")
 
     with open(input_file) as f:
         data = json.load(f)
 
-    opener_idx = random.randint(1, OPENER_COUNT)
-    opener_file = os.path.join(cache_dir, f"opener_{opener_idx:02d}_000.wav")
+    # Detect platform (codex or claude)
+    platform = detect_platform(data)
+    debug(f"Detected platform: {platform}")
 
     # Get last assistant message (works for both Claude Code and Codex)
     last = get_assistant_message(data)
@@ -292,33 +336,20 @@ try:
     tmp_dir = tempfile.mkdtemp()
     summary_prefix = os.path.join(tmp_dir, "summary")
 
-    debug(f"Generating TTS with voice={VOICE}, speed={SPEED}")
-    result = subprocess.run([
-        "python3", "-m", "mlx_audio.tts.generate",
-        "--model", "mlx-community/Kokoro-82M-bf16",
-        "--text", summary_text,
-        "--voice", VOICE,
-        "--lang_code", "b",
-        "--speed", str(SPEED),
-        "--file_prefix", summary_prefix
-    ], capture_output=True, text=True)
+    # Generate TTS
+    result = generate_tts(summary_text, summary_prefix)
 
     if result.returncode != 0:
         debug(f"TTS error: {result.stderr}")
 
     summary_file = f"{summary_prefix}_000.wav"
 
-    # Concatenate opener + summary
-    final_audio = os.path.join(tmp_dir, "final.wav")
-    if os.path.exists(opener_file) and os.path.exists(summary_file):
-        concat_wavs([opener_file, summary_file], final_audio)
-        debug(f"Playing concatenated audio at {PLAYBACK_SPEED}x")
-        subprocess.run(["afplay", "-r", str(PLAYBACK_SPEED), final_audio])
-    elif os.path.exists(summary_file):
-        debug(f"Playing summary only at {PLAYBACK_SPEED}x")
+    # Play the generated audio
+    if os.path.exists(summary_file):
+        debug(f"Playing audio at {PLAYBACK_SPEED}x")
         subprocess.run(["afplay", "-r", str(PLAYBACK_SPEED), summary_file])
     else:
-        debug("No audio files generated")
+        debug("No audio file generated")
 
     # Cleanup
     import shutil
