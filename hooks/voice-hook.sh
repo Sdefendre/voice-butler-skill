@@ -18,7 +18,7 @@ else
 fi
 
 # Single Python script: get summary, generate TTS, concatenate, play - all in one for speed
-/opt/homebrew/bin/python3.11 - "$TMPFILE" "$CACHE_DIR" << 'PY'
+python3 - "$TMPFILE" "$CACHE_DIR" << 'PY'
 import sys, json, re, random, subprocess, wave, os, tempfile
 
 OPENER_COUNT = 12
@@ -230,7 +230,7 @@ try:
     summary_prefix = os.path.join(tmp_dir, "summary")
 
     subprocess.run([
-        "/opt/homebrew/bin/python3.11", "-m", "mlx_audio.tts.generate",
+        "python3", "-m", "mlx_audio.tts.generate",
         "--model", "mlx-community/Kokoro-82M-bf16",
         "--text", summary_text,
         "--voice", "bm_george",
