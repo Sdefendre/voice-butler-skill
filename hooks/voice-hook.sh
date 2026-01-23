@@ -18,7 +18,7 @@ else
 fi
 
 # Single Python script: get summary, generate TTS, concatenate, play - all in one for speed
-python3 - "$TMPFILE" "$CACHE_DIR" << 'PY'
+/opt/homebrew/bin/python3.11 - "$TMPFILE" "$CACHE_DIR" << 'PY'
 import sys, json, re, random, subprocess, wave, os, tempfile
 
 OPENER_COUNT = 12
@@ -69,23 +69,98 @@ def get_closer(text):
     else:
         return random.choice(BUTLER_CLOSERS["default"])
 
-def summarize(text):
-    for pat, rep in [(r'\[([^\]]+)\]\([^)]+\)', r'\1'), (r'\*\*([^*]+)\*\*', r'\1'),
-                     (r'\*([^*]+)\*', r'\1'), (r'`[^`]+`', ''), (r'```[\s\S]*?```', ''),
-                     (r'^#+\s+', ''), (r'^[-*]\s+', ''), (r'\n+', ' '), (r'\s+', ' ')]:
+def summarize(text, max_words=30):
+    """Smart summarization: find key actions and build a coherent summary."""
+    # Handle bullet lists specially before stripping
+    bullet_match = re.search(r'(.*?:)?\s*\n?((?:[-*•]\s+.+\n?)+)', text, re.MULTILINE)
+    if bullet_match:
+        prefix = bullet_match.group(1) or ""
+        items_block = bullet_match.group(2)
+        items = re.findall(r'[-*•]\s+(.+?)(?:\n|$)', items_block)
+        items = [item.strip().rstrip('.') for item in items if item.strip()]
+        if items:
+            # Join with commas and "and" for natural speech
+            if len(items) == 1:
+                list_summary = items[0]
+            elif len(items) == 2:
+                list_summary = f"{items[0]} and {items[1]}"
+            else:
+                list_summary = ', '.join(items[:-1]) + f', and {items[-1]}'
+            # Add prefix if short enough
+            if prefix and len(prefix.split()) <= 4:
+                return f"{prefix.strip()} {list_summary}."
+            return list_summary[0].upper() + list_summary[1:] + '.'
+
+    # Strip markdown formatting
+    for pat, rep in [
+        (r'```[\s\S]*?```', ''),           # code blocks
+        (r'`([^`]+)`', r'\1'),             # inline code -> keep text
+        (r'\[([^\]]+)\]\([^)]+\)', r'\1'), # links -> text only
+        (r'\*\*([^*]+)\*\*', r'\1'),       # bold
+        (r'\*([^*]+)\*', r'\1'),           # italic
+        (r'^#+\s+', ''),                   # headers
+        (r'^[-*]\s+', ''),                 # list items
+        (r'\n+', ' '),                     # newlines to space
+        (r'\s+', ' '),                     # collapse whitespace
+    ]:
         text = re.sub(pat, rep, text, flags=re.MULTILINE)
+
     text = text.strip()
-    if not text: return "Task completed."
-    sentences = re.split(r'[.!?]+', text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if len(sentences) >= 2:
-        summary = f"{sentences[0]}. {sentences[-1]}" if sentences[0] != sentences[-1] else sentences[0]
-    elif sentences:
-        summary = sentences[0]
-    else:
-        summary = "Task completed"
-    words = summary.split()[:40]
-    return ' '.join(words) + ('.' if not summary.endswith('.') else '')
+    if not text:
+        return "Task completed."
+
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip() and len(s) > 5]
+
+    if not sentences:
+        return "Task completed."
+
+    # Action verbs ranked by importance (most descriptive first)
+    actions = [
+        (r'\b(created|wrote|generated|added)\b', 'created'),
+        (r'\b(edited|updated|modified|changed|refactored)\b', 'updated'),
+        (r'\b(fixed|resolved|corrected|repaired)\b', 'fixed'),
+        (r'\b(deleted|removed|cleared)\b', 'removed'),
+        (r'\b(found|located|discovered|identified)\b', 'found'),
+        (r'\b(installed|configured|set up)\b', 'configured'),
+        (r'\b(tested|verified|confirmed|validated)\b', 'verified'),
+        (r'\b(moved|renamed|copied)\b', 'moved'),
+    ]
+
+    # Find the most important action sentence
+    best_sentence = None
+    best_priority = len(actions) + 1
+
+    for sent in sentences:
+        sent_lower = sent.lower()
+        for priority, (pattern, _) in enumerate(actions):
+            if re.search(pattern, sent_lower):
+                if priority < best_priority:
+                    best_priority = priority
+                    best_sentence = sent
+                break
+
+    # Use action sentence, or fall back to first sentence
+    chosen = best_sentence if best_sentence else sentences[0]
+
+    # Trim to max words while keeping coherent
+    words = chosen.split()
+    if len(words) > max_words:
+        # Try to cut at a natural break
+        truncated = ' '.join(words[:max_words])
+        # Find last comma or conjunction to cut cleanly
+        for delim in [', ', ' and ', ' but ', ' or ']:
+            if delim in truncated:
+                truncated = truncated.rsplit(delim, 1)[0]
+                break
+        chosen = truncated + '.'
+
+    # Ensure ends with punctuation
+    if chosen and chosen[-1] not in '.!?':
+        chosen += '.'
+
+    return chosen
 
 def concat_wavs(wav_files, output_path):
     """Concatenate WAV files into one seamless file"""
@@ -155,7 +230,7 @@ try:
     summary_prefix = os.path.join(tmp_dir, "summary")
 
     subprocess.run([
-        "python3", "-m", "mlx_audio.tts.generate",
+        "/opt/homebrew/bin/python3.11", "-m", "mlx_audio.tts.generate",
         "--model", "mlx-community/Kokoro-82M-bf16",
         "--text", summary_text,
         "--voice", "bm_george",
@@ -180,7 +255,7 @@ try:
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 except Exception as e:
-    # Fallback: just say something using system voice
+    # Fallback: just say something
     subprocess.run(["say", "-v", "Daniel", "Task complete, sir."])
 PY
 
