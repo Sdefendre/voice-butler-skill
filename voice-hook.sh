@@ -65,6 +65,8 @@ try:
     # Different voice per CLI
     if source == "codex":
         voice, lang = "am_adam", "a"
+    elif source == "gemini":
+        voice, lang = "bm_daniel", "b"
     else:
         voice, lang = "bm_george", "b"
 
