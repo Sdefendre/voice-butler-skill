@@ -16,15 +16,15 @@ fi
 /opt/homebrew/bin/python3.11 - "$TMPFILE" << 'PY'
 import sys, json, os, re, subprocess, tempfile, shutil
 
-def get_text(data):
+def get_text_and_source(data):
     # Codex: direct field
     for key in ("last-assistant-message", "last_assistant_message"):
         if data.get(key):
-            return data[key]
+            return data[key], "codex"
 
     # Gemini: direct field
     if data.get("prompt_response"):
-        return data["prompt_response"]
+        return data["prompt_response"], "gemini"
 
     # Claude Code: parse transcript JSONL
     tp = data.get('transcript_path', '')
@@ -39,8 +39,8 @@ def get_text(data):
                             if b.get('type') == 'text' and b.get('text', '').strip():
                                 last = b['text'].strip()
                 except: pass
-        return last
-    return None
+        return last, "claude"
+    return None, None
 
 def clean(text):
     for pat, rep in [(r'```[\s\S]*?```', ''), (r'\[([^\]]+)\]\([^)]+\)', r'\1'),
@@ -54,13 +54,19 @@ try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
 
-    text = get_text(data)
+    text, source = get_text_and_source(data)
     if not text:
         sys.exit(0)
 
     text = clean(text)
     if not text:
         sys.exit(0)
+
+    # Different voice per CLI
+    if source == "codex":
+        voice, lang = "am_adam", "a"
+    else:
+        voice, lang = "bm_george", "b"
 
     tmp_dir = tempfile.mkdtemp()
     prefix = os.path.join(tmp_dir, "out")
@@ -69,8 +75,8 @@ try:
         "/opt/homebrew/bin/python3.11", "-m", "mlx_audio.tts.generate",
         "--model", "mlx-community/Kokoro-82M-bf16",
         "--text", text,
-        "--voice", "bm_george",
-        "--lang_code", "b",
+        "--voice", voice,
+        "--lang_code", lang,
         "--speed", "1.3",
         "--file_prefix", prefix
     ], capture_output=True)
