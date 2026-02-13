@@ -84,8 +84,10 @@ except:
     pass
 PY
 
-rm -f "$TMPFILE"
+# Gemini CLI requires JSON on stdout; detect by checking for its field in the input
+if grep -q '"hook_event_name"' "$TMPFILE" 2>/dev/null; then
+    echo '{"decision": "allow"}'
+fi
 
-# Gemini CLI requires JSON response on stdout (harmless for others)
-echo '{"decision": "allow"}'
+rm -f "$TMPFILE"
 exit 0
