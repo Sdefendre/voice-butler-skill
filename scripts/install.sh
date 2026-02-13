@@ -24,15 +24,15 @@ chmod +x "$HOOKS_DIR/voice-hook.sh"
 
 # Check for Python and install mlx-audio if needed
 echo "Checking dependencies..."
-if ! python3 -c "import mlx_audio" 2>/dev/null; then
+if ! /opt/homebrew/bin/python3.11 -c "import mlx_audio" 2>/dev/null; then
     echo "Installing mlx-audio (Kokoro TTS)..."
-    pip3 install mlx-audio
+    /opt/homebrew/bin/python3.11 -m pip install mlx-audio
 fi
 
 # Copy and run opener generator
 echo "Generating cached butler openers..."
 cp "$SKILL_DIR/scripts/generate-openers.py" "$CACHE_DIR/generate-openers.py"
-python3 "$CACHE_DIR/generate-openers.py"
+/opt/homebrew/bin/python3.11 "$CACHE_DIR/generate-openers.py"
 
 # Configure Claude Code hook in settings.json
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
@@ -44,7 +44,7 @@ if [ -f "$SETTINGS_FILE" ]; then
         echo "Hook already configured in settings.json"
     else
         # Add hook to existing settings
-        python3 << 'PYCONFIG'
+        /opt/homebrew/bin/python3.11 << 'PYCONFIG'
 import json
 import os
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/opt/homebrew/bin/python3.11
 """
 Generate pre-cached butler opener audio files for the voice skill.
 These are cached for instant playback without TTS latency.
@@ -41,7 +41,7 @@ for idx, opener in enumerate(OPENERS, 1):
 
     try:
         subprocess.run([
-            "python3", "-m", "mlx_audio.tts.generate",
+            "/opt/homebrew/bin/python3.11", "-m", "mlx_audio.tts.generate",
             "--model", "mlx-community/Kokoro-82M-bf16",
             "--text", opener,
             "--voice", "bm_george",
