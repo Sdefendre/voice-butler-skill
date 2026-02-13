@@ -1,15 +1,32 @@
 #!/bin/bash
-# Voice hook - reads Claude's output aloud using Kokoro TTS
+# Voice hook - reads output aloud using Kokoro TTS
+# Works with Claude Code, OpenAI Codex, and Gemini CLI
 
 [ ! -f ~/.claude/voice-enabled ] && exit 0
 
 TMPFILE=$(mktemp)
-cat > "$TMPFILE"
+
+# Codex passes JSON as argv[1], Claude Code and Gemini pipe to stdin
+if [ -n "$1" ] && [ "$1" != "-" ]; then
+    echo "$1" > "$TMPFILE"
+else
+    cat > "$TMPFILE"
+fi
 
 /opt/homebrew/bin/python3.11 - "$TMPFILE" << 'PY'
 import sys, json, os, re, subprocess, tempfile, shutil
 
 def get_text(data):
+    # Codex: direct field
+    for key in ("last-assistant-message", "last_assistant_message"):
+        if data.get(key):
+            return data[key]
+
+    # Gemini: direct field
+    if data.get("prompt_response"):
+        return data["prompt_response"]
+
+    # Claude Code: parse transcript JSONL
     tp = data.get('transcript_path', '')
     if tp and os.path.exists(tp):
         last = None
@@ -68,4 +85,7 @@ except:
 PY
 
 rm -f "$TMPFILE"
+
+# Gemini CLI requires JSON response on stdout (harmless for others)
+echo '{"decision": "allow"}'
 exit 0
