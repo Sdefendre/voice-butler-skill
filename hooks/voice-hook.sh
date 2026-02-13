@@ -18,7 +18,7 @@ else
 fi
 
 # Single Python script: get summary, generate TTS, play - all in one for speed
-python3 - "$TMPFILE" << 'PY'
+/opt/homebrew/bin/python3.11 - "$TMPFILE" << 'PY'
 import sys, json, re, random, subprocess, os, tempfile
 
 # Configurable settings via environment variables
@@ -288,7 +288,7 @@ def generate_tts(text, output_prefix):
         # Kokoro with British butler voice (slower but distinctive)
         debug(f"Using Kokoro ({KOKORO_VOICE})")
         return subprocess.run([
-            "python3", "-m", "mlx_audio.tts.generate",
+            "/opt/homebrew/bin/python3.11", "-m", "mlx_audio.tts.generate",
             "--model", "mlx-community/Kokoro-82M-bf16",
             "--text", text,
             "--voice", KOKORO_VOICE,
@@ -300,7 +300,7 @@ def generate_tts(text, output_prefix):
         # Pocket TTS (default - fast, low latency)
         debug(f"Using Pocket TTS ({POCKET_VOICE})")
         return subprocess.run([
-            "python3", "-m", "mlx_audio.tts.generate",
+            "/opt/homebrew/bin/python3.11", "-m", "mlx_audio.tts.generate",
             "--model", "mlx-community/pocket-tts",
             "--text", text,
             "--voice", POCKET_VOICE,
