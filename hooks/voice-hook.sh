@@ -208,7 +208,6 @@ def summarize(text, max_words=None):
     # Build summary by collecting top sentences up to max_words
     summary_sentences = []
     word_count = 0
-    used_indices = set()
 
     for score, idx, sent in scored:
         if score < 0:
@@ -216,7 +215,6 @@ def summarize(text, max_words=None):
         sent_words = len(sent.split())
         if word_count + sent_words <= max_words:
             summary_sentences.append((idx, sent))
-            used_indices.add(idx)
             word_count += sent_words
         if word_count >= max_words * 0.8:
             break
