@@ -19,7 +19,7 @@ A British butler voice notification skill for Claude Code and OpenAI Codex. Get 
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/voice-butler-skill.git
+git clone https://github.com/Sdefendre/voice-butler-skill.git
 cd voice-butler-skill
 
 # Run the installer
